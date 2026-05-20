@@ -14,7 +14,7 @@ try:
 except Exception:
     NBA_API_AVAILABLE = False
 
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.3"
 
 TEAM_META = {
     "Atlanta Hawks": {"abbr": "ATL", "primary": "#E03A3E", "secondary": "#FDB9B9"},
@@ -104,11 +104,18 @@ def team_lookup_maps() -> Tuple[Dict[int, str], Dict[str, str]]:
 TEAM_ID_TO_NAME, TEAM_ABBR_TO_NAME = team_lookup_maps()
 
 
+SEASON_TYPE_OPTIONS = ["Regular Season", "Playoffs"]
+
+
 @st.cache_data(show_spinner=False)
-def fetch_games(season: str = "2025-26", limit: int = 100) -> pd.DataFrame:
+def fetch_games(season: str = "2025-26", season_type: str = "Regular Season", limit: int = 100) -> pd.DataFrame:
     if not NBA_API_AVAILABLE:
         return pd.DataFrame()
-    finder = LeagueGameFinder(season_nullable=season, league_id_nullable="00")
+    finder = LeagueGameFinder(
+        season_nullable=season,
+        season_type_nullable=season_type,
+        league_id_nullable="00",
+    )
     df = finder.get_data_frames()[0]
     if df.empty:
         return df
@@ -164,6 +171,78 @@ def load_shot_locations(game_id: str, team_id: int) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
     return pd.DataFrame()
+
+
+def format_clock(clock_val: Optional[str]) -> str:
+    """Convert an NBA API duration string or bare M:SS string to basketball display format (M:SS).
+
+    Handles:
+      - ISO 8601 duration variants: ``PT07M39.00S``, ``PT7M39S``, ``PT00M39.00S``
+      - Seconds-only ISO variant:  ``PT39.00S`` (no ``M`` component)
+      - Already-normal strings:    ``7:39``, ``12:00``, ``0:00``
+      - ``None`` / NaN             → ``"--:--"``
+
+    Returns a string like ``"7:39"`` (no leading zero on minutes).
+    """
+    if clock_val is None or (isinstance(clock_val, float) and pd.isna(clock_val)):
+        return "--:--"
+    text = str(clock_val).strip()
+    if not text or text in ("nan", "None", "null"):
+        return "--:--"
+    # ISO 8601 duration: PT##M##.##S or PT##M##S
+    if text.upper().startswith("PT"):
+        try:
+            inner = text[2:]  # strip leading PT
+            if "M" in inner.upper():
+                m_idx = inner.upper().index("M")
+                mins = int(inner[:m_idx])
+                s_part = inner[m_idx + 1:]
+                if s_part.upper().endswith("S"):
+                    s_part = s_part[:-1]
+                secs = int(round(float(s_part))) if s_part else 0
+            else:
+                # PT##.##S — only seconds, no minutes component
+                s_part = inner
+                if s_part.upper().endswith("S"):
+                    s_part = s_part[:-1]
+                total = int(round(float(s_part))) if s_part else 0
+                mins, secs = divmod(total, 60)
+            return f"{mins}:{secs:02d}"
+        except Exception:
+            return text  # return as-is on unexpected format
+    # Already M:SS or MM:SS
+    if ":" in text:
+        try:
+            mm, ss = text.split(":", 1)
+            return f"{int(mm)}:{int(float(ss)):02d}"
+        except Exception:
+            return text
+    # Plain numeric seconds
+    try:
+        total = int(round(float(text)))
+        mins, secs = divmod(total, 60)
+        return f"{mins}:{secs:02d}"
+    except Exception:
+        return text
+
+
+def format_period_clock(period: int, clock_val: Optional[str]) -> str:
+    """Combine a period number and clock value into basketball-readable display.
+
+    Examples:
+      period=4, clock="PT07M39.00S"  → ``"Q4 7:39"``
+      period=1, clock="PT12M00.00S" → ``"Q1 12:00"``
+      period=5, clock="PT03M05.00S" → ``"OT 3:05"``
+      period=6, clock="PT01M30.00S" → ``"OT2 1:30"``
+    """
+    clock_str = format_clock(clock_val)
+    if period <= 0:
+        return clock_str
+    if period <= 4:
+        return f"Q{period} {clock_str}"
+    ot_num = period - 4
+    ot_label = "OT" if ot_num == 1 else f"OT{ot_num}"
+    return f"{ot_label} {clock_str}"
 
 
 def parse_clock_to_seconds(clock_val: Optional[str]) -> Optional[int]:
@@ -314,8 +393,10 @@ def enrich_game(df: pd.DataFrame, game_date: Optional[str] = None) -> Tuple[pd.D
     enriched["points_added"] = enriched[["home_points_added", "away_points_added"]].max(axis=1)
     enriched["score_margin_home"] = enriched["score_home"] - enriched["score_away"]
     enriched["absolute_margin"] = enriched["score_margin_home"].abs()
-    enriched["period_label"] = enriched["period"].apply(lambda p: f"Q{p}" if p <= 4 else f"OT{p-4}")
-    enriched["clock_display"] = enriched["clock"].fillna("")
+    enriched["period_label"] = enriched["period"].apply(lambda p: f"Q{p}" if p <= 4 else ("OT" if p == 5 else f"OT{p - 4}"))
+    enriched["clock_display"] = enriched.apply(
+        lambda row: format_clock(row["clock"]), axis=1
+    )
     meta = {
         "home_team": home_team,
         "away_team": away_team,
@@ -947,6 +1028,26 @@ Run command:
 streamlit run app.py
 ```
 
+Version 0.4.3 — Basketball clock formatting:
+- Game clock/time values now display in normal basketball format (e.g. "Q4 7:39",
+  "Q1 12:00", "OT 3:05") instead of raw NBA API ISO duration strings like
+  "PT07M39.00S".
+- Added format_clock() helper that handles PT##M##.##S, PT##S, plain M:SS, and
+  already-normalised strings robustly.
+- Added format_period_clock() helper to combine period + clock into Q1–Q4 / OT / OT2…
+  labels for display.
+- clock_display column in the enriched DataFrame is now always human-readable.
+- Raw "clock" column is preserved internally for all second-based calculations.
+- CSV upload compatibility is unchanged.
+
+Version 0.4.2 — Season-type dropdown:
+- Added a "Season type" dropdown in the sidebar (Regular Season / Playoffs).
+- Selecting Playoffs passes season_type_nullable="Playoffs" to LeagueGameFinder,
+  so the game list shows only playoff matchups for the selected season.
+- The season type is included in the fetch_games cache key, so switching between
+  Regular Season and Playoffs loads the correct game list without clearing other state.
+- CSV upload fallback is unaffected.
+
 Version 0.4.1 heatmap upgrades:
 - Explicit mode labeling: True Shot Coordinates vs Inferred Zone Map
 - Heatmap metric toggle for Attempts, Makes, FG%, Points, and Expected Value
@@ -958,17 +1059,25 @@ Known limitations:
 - True-coordinate maps still depend on ShotChartDetail availability.
 - Fallback mode is intentionally labeled as inferred, not exact.
 - Expected Value is a lightweight heuristic, not a learned shot-quality model.
+- If a season has no playoff data yet (e.g. current season before playoffs start),
+  the game list will be empty when Playoffs is selected.
 """
 
 
 def main() -> None:
     st.title("🏀 NBA Game Storyboard")
-    st.caption(f"Version {APP_VERSION} — possession-aware game storytelling dashboard with improved shot chart heatmaps")
+    st.caption(f"Version {APP_VERSION} — possession-aware game storytelling dashboard with Regular Season / Playoffs support")
 
     with st.sidebar:
         st.markdown("### Controls")
         source = st.radio("Data source", ["NBA API", "Local CSV backup"], index=0 if NBA_API_AVAILABLE else 1)
         season = st.selectbox("Season", ["2025-26", "2024-25", "2023-24"], index=0)
+        season_type = st.selectbox(
+            "Season type",
+            SEASON_TYPE_OPTIONS,
+            index=0,
+            help="Switch between Regular Season and Playoffs game lists.",
+        )
         uploaded = None
         games_df = pd.DataFrame()
         selected_game_id = None
@@ -978,7 +1087,7 @@ def main() -> None:
                 st.error("nba_api is unavailable in this environment. Use the local CSV option.")
             else:
                 with st.spinner("Loading recent games..."):
-                    games_df = fetch_games(season=season, limit=120)
+                    games_df = fetch_games(season=season, season_type=season_type, limit=120)
                 if games_df.empty:
                     st.warning("No games returned for this season.")
                 else:
