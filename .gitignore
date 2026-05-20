@@ -1,0 +1,45 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+
+# Streamlit secrets (never commit real secrets)
+.streamlit/secrets.toml
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Local data / cache outputs
+*.csv
+*.parquet
+*.feather
+*.pkl
+*.pickle
+__streamlit_cache__/
+.streamlit/cache/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
