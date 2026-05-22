@@ -14,7 +14,7 @@ try:
 except Exception:
     NBA_API_AVAILABLE = False
 
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.5.0"
 
 TEAM_META = {
     "Atlanta Hawks": {"abbr": "ATL", "primary": "#E03A3E", "secondary": "#FDB9B9"},
@@ -816,6 +816,148 @@ def possession_chart(poss_summary: pd.DataFrame, meta: Dict) -> go.Figure:
     return fig
 
 
+def shot_profile_figure(zone_summary: pd.DataFrame, meta: Dict) -> go.Figure:
+    """Two-panel Shot Profile: left = Shooting Efficiency (FG%), right = Volume & Frequency (Attempts).
+
+    Zones are ordered logically: 3PT, FT, Rim, Midrange, then any unknown categories appended.
+    Each team gets its primary brand color.  Value labels are drawn above each marker.
+    """
+    ZONE_ORDER = ["3PT", "FT", "Rim", "Midrange"]
+
+    if zone_summary.empty:
+        return go.Figure()
+
+    # Build canonical zone order — known first, then any extras alphabetically
+    present = zone_summary["shot_zone"].dropna().unique().tolist()
+    ordered_known = [z for z in ZONE_ORDER if z in present]
+    extras = sorted([z for z in present if z not in ZONE_ORDER])
+    zones = ordered_known + extras
+
+    teams = zone_summary["team_name"].dropna().unique().tolist()
+    # Map each team to its brand primary color
+    fallback_colors = ["#2563eb", "#ef4444", "#16a34a", "#d97706"]
+    team_colors: Dict[str, str] = {}
+    for i, t in enumerate(teams):
+        team_colors[t] = TEAM_META.get(t, {}).get("primary") or fallback_colors[i % len(fallback_colors)]
+
+    # Slight horizontal offset so labels don't overlap when two teams share a zone x-position
+    offsets: Dict[str, float] = {}
+    if len(teams) == 2:
+        offsets[teams[0]] = -0.18
+        offsets[teams[1]] = 0.18
+    else:
+        for t in teams:
+            offsets[t] = 0.0
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        horizontal_spacing=0.10,
+        subplot_titles=("Shooting Efficiency (FG%)", "Volume & Frequency"),
+    )
+
+    for team in teams:
+        tdf = zone_summary[zone_summary["team_name"] == team].set_index("shot_zone").reindex(zones)
+        color = team_colors[team]
+        x_pos = [i + offsets[team] for i in range(len(zones))]
+
+        # ── Left panel: FG% ──────────────────────────────────────────────────
+        fg_vals = tdf["fg_pct"].tolist()
+        fg_labels = [
+            f"{v:.1f}%" if pd.notna(v) and v > 0 else ""
+            for v in fg_vals
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=x_pos,
+                y=fg_vals,
+                mode="markers+text",
+                name=team,
+                marker=dict(size=14, color=color, line=dict(color="rgba(255,255,255,0.6)", width=2)),
+                text=fg_labels,
+                textposition="top center",
+                textfont=dict(size=11, color=color),
+                legendgroup=team,
+                showlegend=True,
+                hovertemplate=f"{team}<br>Zone: %{{customdata}}<br>FG%%: %{{y:.1f}}<extra></extra>",
+                customdata=zones,
+            ),
+            row=1, col=1,
+        )
+
+        # ── Right panel: Attempts ────────────────────────────────────────────
+        att_vals = tdf["attempts"].tolist()
+        att_labels = [
+            str(int(v)) if pd.notna(v) and v > 0 else ""
+            for v in att_vals
+        ]
+        fig.add_trace(
+            go.Scatter(
+                x=x_pos,
+                y=att_vals,
+                mode="markers+text",
+                name=team,
+                marker=dict(size=14, color=color, line=dict(color="rgba(255,255,255,0.6)", width=2)),
+                text=att_labels,
+                textposition="top center",
+                textfont=dict(size=11, color=color),
+                legendgroup=team,
+                showlegend=False,
+                hovertemplate=f"{team}<br>Zone: %{{customdata}}<br>Attempts: %{{y}}<extra></extra>",
+                customdata=zones,
+            ),
+            row=1, col=2,
+        )
+
+    # ── Axis styling ─────────────────────────────────────────────────────────
+    tick_vals = list(range(len(zones)))
+    for col_idx in (1, 2):
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=tick_vals,
+            ticktext=zones,
+            tickfont=dict(size=12),
+            showgrid=False,
+            zeroline=False,
+            row=1, col=col_idx,
+        )
+
+    fig.update_yaxes(
+        title_text="FG%",
+        range=[0, 115],
+        ticksuffix="%",
+        gridcolor="rgba(20,32,51,0.07)",
+        row=1, col=1,
+    )
+    fig.update_yaxes(
+        title_text="Attempts",
+        rangemode="tozero",
+        gridcolor="rgba(20,32,51,0.07)",
+        row=1, col=2,
+    )
+
+    # ── Dark-card look ────────────────────────────────────────────────────────
+    fig.update_layout(
+        template="plotly_dark",
+        height=420,
+        margin=dict(l=20, r=20, t=60, b=20),
+        paper_bgcolor="#111827",
+        plot_bgcolor="#111827",
+        legend=dict(
+            orientation="h",
+            y=1.14,
+            x=0.5,
+            xanchor="center",
+            font=dict(size=13, color="#eef4ff"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        font=dict(color="#eef4ff"),
+    )
+    for ann in fig.layout.annotations:
+        ann.font = dict(size=14, color="#eef4ff")
+
+    return fig
+
+
 def shot_zone_chart(shot_df: pd.DataFrame, meta: Dict) -> go.Figure:
     fig = go.Figure()
     if shot_df.empty:
@@ -1078,6 +1220,21 @@ Run command:
 streamlit run app.py
 ```
 
+Version 0.5.0 — Shot Profile visual:
+- Replaced inline shot-zone raw table with a two-panel Shot Profile chart.
+- Left panel: Shooting Efficiency (FG%) — markers per team at each shot zone with
+  percentage labels above (e.g. "63.6%"). Y-axis fixed 0–115%.
+- Right panel: Volume & Frequency — attempt counts per zone with numeric labels.
+  Y-axis auto-ranged from zero.
+- Zones ordered logically: 3PT, FT, Rim, Midrange; unknown categories appended.
+- Team colors sourced from the TEAM_META palette; fallback two-color palette when
+  a team is not in the lookup.
+- Dark rounded-card wrapper (heat-shell class) consistent with the heatmap section.
+- Raw shot zone data preserved in a collapsible "View raw shot zone data" expander.
+- shot_profile_figure() helper added; existing shot_zone_chart() and all
+  downstream data references are untouched.
+- CSV upload compatibility unchanged.
+
 Version 0.4.4 — Game Story voice overhaul:
 - Replaced robotic stat-dump Game Story language with energetic NBA TV analyst prose.
 - Story now opens with a context-aware lede (blowout vs. nail-biter vs. comfortable win).
@@ -1293,8 +1450,21 @@ def main() -> None:
 
     st.markdown("## Shot zones")
     st.plotly_chart(shot_zone_chart(shot_df, meta), use_container_width=True)
+    # ── Shot Profile visual ──────────────────────────────────────────────────
     if not shot_df.empty:
-        st.dataframe(shot_df, use_container_width=True, hide_index=True)
+        st.markdown(
+            '<div class="heat-shell" style="margin-top:0.6rem; margin-bottom:0.6rem;">'
+            '<div class="heat-title" style="font-size:1.25rem; margin-bottom:0.4rem;">Shot Profile</div>'
+            '<div class="heat-subtle">Shooting efficiency and volume by zone — markers colored by team.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(shot_profile_figure(shot_df, meta), use_container_width=True)
+    with st.expander("View raw shot zone data", expanded=False):
+        if shot_df.empty:
+            st.info("No shot zone data available.")
+        else:
+            st.dataframe(shot_df, use_container_width=True, hide_index=True)
 
     st.markdown("## Game possession analysis: shot chart heatmaps")
     st.markdown('<div class="heat-shell">', unsafe_allow_html=True)
