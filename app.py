@@ -14,7 +14,7 @@ try:
 except Exception:
     NBA_API_AVAILABLE = False
 
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4"
 
 TEAM_META = {
     "Atlanta Hawks": {"abbr": "ATL", "primary": "#E03A3E", "secondary": "#FDB9B9"},
@@ -634,16 +634,16 @@ def keys_to_game(df: pd.DataFrame, meta: Dict, runs_df: pd.DataFrame, poss_summa
     notes = []
     if not runs_df.empty:
         top_run = runs_df.iloc[0]
-        notes.append(f"Biggest burst: {top_run['team']} authored a {top_run['run_label']} run from {top_run['start_time']} to {top_run['end_time']}.")
+        notes.append(f"Run of the game: {top_run['team']} went on a {top_run['run_label']} burst between {top_run['start_time']} and {top_run['end_time']} — that stretch changed the entire complexion of the game.")
     if not poss_summary.empty:
         explosive = poss_summary.sort_values(["points", "duration_seconds"], ascending=[False, True]).iloc[0]
-        notes.append(f"Fastest damaging possession stretch: {explosive['possession_team']} posted {int(explosive['points'])} points in a possession ending with '{explosive['last_description']}'.")
+        notes.append(f"Most lethal possession: {explosive['possession_team']} squeezed {int(explosive['points'])} points out of a single stretch, capped by '{explosive['last_description']}' — the kind of sequence the other bench just watches in silence.")
     top_margin_row = df.iloc[df["absolute_margin"].idxmax()] if not df.empty else None
     if top_margin_row is not None:
         leader = meta["home_team"] if top_margin_row["score_margin_home"] > 0 else meta["away_team"]
-        notes.append(f"Maximum separation came at {top_margin_row['period_label']} {top_margin_row['clock_display']}, when {leader} led by {int(abs(top_margin_row['score_margin_home']))}.")
+        notes.append(f"Peak separation hit at {top_margin_row['period_label']} {top_margin_row['clock_display']}, with {leader} up by {int(abs(top_margin_row['score_margin_home']))} — the moment the crowd either went home happy or went quiet.")
     if clutch.get("qualified"):
-        notes.append(f"Clutch factor: the game stayed within five in the last five minutes and featured {clutch['lead_changes']} late lead changes.")
+        notes.append(f"Clutch factor: the margin stayed inside five with five minutes left and the lead changed hands {clutch['lead_changes']} time(s) — this one had to be earned the hard way.")
     return notes[:4]
 
 
@@ -652,27 +652,77 @@ def game_story(meta: Dict, runs_df: pd.DataFrame, turning: Optional[Dict], clutc
     loser = meta["away_team"] if winner == meta["home_team"] else meta["home_team"]
     winner_score = meta["home_score"] if winner == meta["home_team"] else meta["away_score"]
     loser_score = meta["away_score"] if winner == meta["home_team"] else meta["home_score"]
-    parts = [f"{winner} beat {loser} {winner_score}-{loser_score}, and the Version 0.4.1 profile now separates true-coordinate shot maps from inferred zone maps so the shot story is clearer about what is measured and what is estimated."]
+    margin = winner_score - loser_score
+
+    # ── Lede: hook the reader with the final result ──────────────────────────
+    if margin <= 3:
+        lede = f"In a game that refused to be decided until the final possession, {winner} held on to beat {loser} {winner_score}-{loser_score}."
+    elif margin <= 8:
+        lede = f"{winner} made it look comfortable down the stretch, pulling away from {loser} for a {winner_score}-{loser_score} win."
+    elif margin <= 18:
+        lede = f"{winner} got out to business early and never really let {loser} back in, closing it out {winner_score}-{loser_score}."
+    else:
+        lede = f"This one was over before halftime. {winner} steamrolled {loser} {winner_score}-{loser_score} in a game that was never truly in doubt."
+    parts = [lede]
+
+    # ── Possession efficiency — only if the number is meaningful ────────────
     if not ratings_df.empty:
         winner_row = ratings_df[ratings_df["team"] == winner].iloc[0]
-        parts.append(f"At the possession level, {winner} posted an estimated offensive rating of {winner_row['off_rating']} while controlling {winner_row['possessions']} possessions in the tracked feed.")
+        off_rtg = winner_row["off_rating"]
+        poss_count = winner_row["possessions"]
+        if off_rtg >= 115:
+            parts.append(f"{winner} was surgical offensively — their estimated offensive rating of {off_rtg} over {poss_count} tracked possessions is the kind of number that makes film-session prep miserable for the next opponent.")
+        elif off_rtg >= 105:
+            parts.append(f"Possession-by-possession, {winner} was efficient enough: an estimated offensive rating of {off_rtg} across {poss_count} possessions got the job done.")
+        else:
+            parts.append(f"{winner} won it despite a modest estimated offensive rating of {off_rtg} — this was more about defensive grit than offensive fireworks.")
+
+    # ── Biggest run — the momentum story ────────────────────────────────────
     if not runs_df.empty:
         top_run = runs_df.iloc[0]
-        parts.append(f"The biggest run was a {top_run['run_label']} surge by {top_run['team']} from {top_run['start_time']} to {top_run['end_time']}.")
+        run_team = top_run["team"]
+        run_label = top_run["run_label"]
+        run_start = top_run["start_time"]
+        run_end = top_run["end_time"]
+        if run_team == winner:
+            parts.append(f"The {run_label} run by {run_team} between {run_start} and {run_end} was the turning of the tide — the stretch where the game stopped being a contest and started being a coronation.")
+        else:
+            parts.append(f"{run_team} mounted a {run_label} run from {run_start} to {run_end} and had the crowd briefly believing in a comeback, but {winner} had enough in the tank to weather it.")
+
+    # ── Turning point ────────────────────────────────────────────────────────
     if turning:
-        q_label = f"Q{turning['quarter']}" if turning['quarter'] <= 4 else f"OT{turning['quarter'] - 4}"
-        parts.append(f"The likely turning point came in {q_label} at {turning['clock']}, when {turning['team']} produced this sequence: {turning['description']} The score was {turning['score']}.")
+        q_label = f"Q{turning['quarter']}" if turning["quarter"] <= 4 else f"OT{turning['quarter'] - 4}"
+        parts.append(f"Circle {q_label} {turning['clock']} in your notebook — that's when {turning['team']} made the play that cracked this thing open: {turning['description']} Score at that moment: {turning['score']}.")
+
+    # ── Shooting geography — only the sharpest insight ───────────────────────
     if not heatmaps_df.empty:
         top_hex = heatmaps_df.sort_values(["attempts", "points"], ascending=False).iloc[0]
-        parts.append(f"Spatially, the heaviest shot concentration came from the {top_hex['zone_label']} lane for {top_hex['team_name']}, where the team logged {int(top_hex['attempts'])} attempts and {int(top_hex['points'])} points.")
+        zone = top_hex["zone_label"]
+        team_h = top_hex["team_name"]
+        pts_h = int(top_hex["points"])
+        att_h = int(top_hex["attempts"])
+        parts.append(f"{team_h} made the {zone} their address all night — {att_h} attempts, {pts_h} points out of that spot. When a team hunts a zone that aggressively and gets production, the defense has real decisions to make.")
     elif not shot_df.empty:
         top_zone = shot_df.sort_values(["points", "attempts"], ascending=False).iloc[0]
-        parts.append(f"The most productive scoring zone in the tracked data was {top_zone['shot_zone']} for {top_zone['team_name']}, yielding {int(top_zone['points'])} points across {int(top_zone['attempts'])} attempts.")
+        fg = top_zone.get("fg_pct", None)
+        pct_str = f" at {fg}%" if pd.notna(fg) and fg > 0 else ""
+        parts.append(f"{top_zone['team_name']} lived in the {top_zone['shot_zone']} — {int(top_zone['attempts'])} looks, {int(top_zone['points'])} points{pct_str}. That's a diet plan, and it worked.")
+
+    # ── Clutch time ──────────────────────────────────────────────────────────
     if clutch.get("qualified"):
-        parts.append(f"It also qualified as a clutch game, with {clutch['plays']} scoring plays in the final five minutes while the margin stayed within five.")
+        if clutch["lead_changes"] >= 3:
+            parts.append(f"And yes, it went to the clutch — final five minutes, margin inside five, {clutch['lead_changes']} lead changes. Both benches were burning timeouts and both fan bases were burning through antacids.")
+        else:
+            parts.append(f"The game got tight late — margin inside five with five to go, {clutch['plays']} scoring plays in the clutch window. {winner} made the right plays when it mattered.")
+
+    # ── Star of the biggest run ──────────────────────────────────────────────
     if not impact_df.empty:
         top_player = impact_df.sort_values(["points", "scoring_plays"], ascending=False).iloc[0]
-        parts.append(f"Within the biggest swing segments, {top_player['player']} stood out most, delivering {int(top_player['points'])} points across {int(top_player['scoring_plays'])} scoring plays.")
+        player_name = top_player["player"]
+        player_pts = int(top_player["points"])
+        player_plays = int(top_player["scoring_plays"])
+        parts.append(f"When the game needed someone to grab it by the collar, {player_name} answered — {player_pts} points across {player_plays} scoring plays in the most critical stretches. That's the type of performance you build a highlight reel around.")
+
     return " ".join(parts)
 
 
@@ -896,17 +946,17 @@ def heatmap_summary_table(hex_frames: List[pd.DataFrame]) -> pd.DataFrame:
 
 def team_heatmap_insight(hex_df: pd.DataFrame, team_name: str, mode_label: str) -> str:
     if hex_df.empty:
-        return f"{team_name} does not have enough shot-location detail in the current feed."
+        return f"Not enough shot-location data for {team_name} in this feed — check back with the full API pull."
     top_zone = hex_df.groupby("zone_label", dropna=False).agg(attempts=("attempts", "sum"), points=("points", "sum"), makes=("makes", "sum")).reset_index().sort_values(["attempts", "points"], ascending=False).iloc[0]
     fg_pct = round((top_zone["makes"] / max(top_zone["attempts"], 1)) * 100, 1)
-    prefix = "Measured" if mode_label == "True Shot Coordinates" else "Estimated"
+    src = "Exact coordinates" if mode_label == "True Shot Coordinates" else "Estimated from play-by-play"
     if top_zone["zone_label"] == "Corner three":
-        return f"{prefix} corner pressure: {team_name} showed notable volume along the corners, giving the shot map a strong spacing signature."
+        return f"{src}: {team_name} camped out in the corners all night — serious floor-spacing intent that forces defenses to make hard rotations."
     if top_zone["zone_label"] == "Restricted area":
-        return f"{prefix} rim pressure: {team_name} concentrated touches near the basket and turned that zone into {int(top_zone['points'])} points on {int(top_zone['attempts'])} attempts."
+        return f"{src}: {team_name} attacked the rim relentlessly — {int(top_zone['points'])} points on {int(top_zone['attempts'])} attempts in the restricted area. That's a bully-ball blueprint."
     if fg_pct >= 50:
-        return f"{prefix} efficiency pocket: {team_name} found its best volume-efficiency mix in the {top_zone['zone_label'].lower()}, shooting {fg_pct}% there in the mapped sample."
-    return f"{prefix} volume pocket: {team_name} worked most often from the {top_zone['zone_label'].lower()}, though the conversion rate there was more moderate than dominant."
+        return f"{src}: {team_name} found its sweet spot in the {top_zone['zone_label'].lower()}, knocking down {fg_pct}% there. When a team shoots that well from a single zone, opponents have to pick their poison."
+    return f"{src}: {team_name} volume-hunted from the {top_zone['zone_label'].lower()}. The conversion rate was modest, but the aggression kept the defense honest."
 
 
 def draw_half_court_shapes(col_index: int) -> List[Dict]:
@@ -1028,6 +1078,18 @@ Run command:
 streamlit run app.py
 ```
 
+Version 0.4.4 — Game Story voice overhaul:
+- Replaced robotic stat-dump Game Story language with energetic NBA TV analyst prose.
+- Story now opens with a context-aware lede (blowout vs. nail-biter vs. comfortable win).
+- Momentum runs are framed as narrative turning points, not data dumps.
+- Turning point uses punchy, scene-setting language ("Circle Q4 7:39 in your notebook...").
+- Shooting geography phrasing tightened — zone stats only when they drive the story.
+- Clutch-time copy scaled by number of lead changes.
+- Player impact closes the story with highlight-reel framing.
+- Keys-to-game bullets rewritten for sharper, more conversational flow.
+- Heatmap insight text updated with more vivid positional language.
+- No new dependencies or UI changes; no dropdown added.
+
 Version 0.4.3 — Basketball clock formatting:
 - Game clock/time values now display in normal basketball format (e.g. "Q4 7:39",
   "Q1 12:00", "OT 3:05") instead of raw NBA API ISO duration strings like
@@ -1066,7 +1128,7 @@ Known limitations:
 
 def main() -> None:
     st.title("🏀 NBA Game Storyboard")
-    st.caption(f"Version {APP_VERSION} — possession-aware game storytelling dashboard with Regular Season / Playoffs support")
+    st.caption(f"Version {APP_VERSION} — possession-aware game storytelling dashboard with energetic analyst-voice Game Story")
 
     with st.sidebar:
         st.markdown("### Controls")
